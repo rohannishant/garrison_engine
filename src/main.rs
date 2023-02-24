@@ -1,19 +1,19 @@
-use std::{
-    collections::HashMap,
-    io::{self, Read},
-};
+use std::{collections::HashMap, io};
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy, Default)]
 struct Coordinate {
     file: i8,
     rank: i8,
 }
 
 impl Coordinate {
-    fn new(f: char, r: i8) -> Coordinate {
-        Coordinate {
-            file: (f as u8 - 96) as i8,
-            rank: r,
+    fn new(f: char, r: i8) -> Option<Coordinate> {
+        let f = (f as u8 - 96) as i8;
+
+        if f > 0 && f < 9 && r > 0 && r < 9 {
+            Some(Coordinate { file: f, rank: r })
+        } else {
+            None
         }
     }
 }
@@ -46,23 +46,14 @@ struct Piece {
 struct Move {
     from: Coordinate,
     to: Coordinate,
-    capture: bool,
-    piece_type: PieceType,
 }
 
 impl Move {
     fn alg(&self) -> String {
         format!(
             "{}{}{}{}",
-            match self.piece_type {
-                PieceType::Pawn => "",
-                PieceType::Knight => "N",
-                PieceType::Bishop => "B",
-                PieceType::Rook => "R",
-                PieceType::Queen => "Q",
-                PieceType::King => "K",
-            },
-            if self.capture { "x" } else { "" },
+            (self.from.file as u8 + 96) as char,
+            self.from.rank,
             (self.to.file as u8 + 96) as char,
             self.to.rank
         )
@@ -232,22 +223,44 @@ impl Board {
                         temp.rank += dir;
                         temp
                     };
+                    let upl = {
+                        let mut temp = up1;
+                        temp.file -= dir;
+                        temp
+                    };
+                    let upr = {
+                        let mut temp = up1;
+                        temp.file += dir;
+                        temp
+                    };
                     if self.pieces.get(&up1).is_none() {
                         moves.push(Move {
                             from: *p.0,
                             to: up1,
-                            capture: false,
-                            piece_type: PieceType::Pawn,
                         });
                     }
                     if !p.1.has_moved && self.pieces.get(&up2).is_none() {
                         moves.push(Move {
                             from: *p.0,
                             to: up2,
-                            capture: false,
-                            piece_type: PieceType::Pawn,
                         });
                     }
+                    if self.pieces.get(&upl).is_some()
+                        && self.pieces.get(&upl).unwrap().color != self.turn_color
+                    {
+                        moves.push(Move {
+                            from: *p.0,
+                            to: upl,
+                        })
+                    };
+                    if self.pieces.get(&upr).is_some()
+                        && self.pieces.get(&upr).unwrap().color != self.turn_color
+                    {
+                        moves.push(Move {
+                            from: *p.0,
+                            to: upr,
+                        })
+                    };
                 }
                 PieceType::Knight => {
                     for (x, y) in [
@@ -266,26 +279,16 @@ impl Board {
                             temp.rank += y;
                             temp
                         };
-
-                        let mut cap = false;
                         if d.file > 0
                             && d.file < 9
                             && d.rank > 0
                             && d.rank < 9
                             && match self.pieces.get(&d) {
-                                Some(piece) => {
-                                    cap = true;
-                                    piece.color != self.turn_color
-                                }
+                                Some(piece) => piece.color != self.turn_color,
                                 None => true,
                             }
                         {
-                            moves.push(Move {
-                                from: *p.0,
-                                to: d,
-                                capture: cap,
-                                piece_type: PieceType::Knight,
-                            })
+                            moves.push(Move { from: *p.0, to: d })
                         }
                     }
                 }
@@ -299,6 +302,9 @@ impl Board {
         if self.legal_moves().contains(mov) {
             let mut p = *self.pieces.get(&mov.from).unwrap();
             p.has_moved = true;
+            for dbl in self.pieces.iter_mut().filter(|d| d.1.doubled_last_turn) {
+                dbl.1.doubled_last_turn = false;
+            }
             if p.piece_type == PieceType::Pawn && (mov.to.rank - mov.from.rank).abs() == 2 {
                 p.doubled_last_turn = true;
             }
@@ -322,48 +328,40 @@ impl Board {
 
     fn parse_alg(&self, s: &String) -> Result<Move, ()> {
         let mut mov = Move {
-            from: Coordinate::new('a', 2),
-            to: Coordinate::new('a', 3),
-            capture: false,
-            piece_type: PieceType::Pawn,
+            from: Default::default(),
+            to: Default::default(),
         };
 
-        mov.piece_type = match s.chars().nth(0) {
-            Some(c) => match c {
-                'N' => PieceType::Knight,
-                'B' => PieceType::Bishop,
-                'R' => PieceType::Rook,
-                'Q' => PieceType::Queen,
-                'K' => PieceType::King,
-                _ => {
-                    let pawn_from = match self
-                        .pieces
-                        .iter()
-                        .filter(|p| {
-                            p.1.color == self.turn_color
-                                && p.1.piece_type == PieceType::Pawn
-                                && p.0.file == (c as u8 - 96) as i8
-                        })
-                        .next()
-                    {
-                        Some(pn) => pn.0,
+        mov.from = match s.chars().nth(0) {
+            Some(file) => match s.chars().nth(1) {
+                Some(rank) => match Coordinate::new(
+                    file,
+                    match rank.to_digit(9) {
+                        Some(d) => d,
                         None => return Err(()),
-                    };
+                    } as i8,
+                ) {
+                    Some(c) => c,
+                    None => return Err(()),
+                },
+                None => return Err(()),
+            },
+            None => return Err(()),
+        };
 
-                    mov.from = *pawn_from;
-                    mov.to = Coordinate::new(
-                        c,
-                        match s.chars().nth(1) {
-                            Some(c2) => match String::from(c2).parse() {
-                                Ok(n) => n,
-                                Err(_) => return Err(()),
-                            },
-                            None => return Err(()),
-                        },
-                    );
-
-                    PieceType::Pawn
-                }
+        mov.to = match s.chars().nth(2) {
+            Some(file) => match s.chars().nth(3) {
+                Some(rank) => match Coordinate::new(
+                    file,
+                    match rank.to_digit(9) {
+                        Some(d) => d,
+                        None => return Err(()),
+                    } as i8,
+                ) {
+                    Some(c) => c,
+                    None => return Err(()),
+                },
+                None => return Err(()),
             },
             None => return Err(()),
         };
@@ -388,7 +386,7 @@ fn main() {
                 Ok(()) => board.print_position(),
                 Err(()) => println!("Illegal move. Please make a legal move."),
             },
-            Err(()) => println!("Could not parse move. Please use valid algebraic notation."),
+            Err(()) => println!("Error parsing move. Please use valid long algebraic notation."),
         }
     }
 }
